@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:world_time/models/sharedprefs.dart';
 import 'package:world_time/services/region.dart';
 import 'package:world_time/services/worldtime.dart';

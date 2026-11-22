@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:world_time/models/sharedprefs.dart';
 import 'package:world_time/services/region.dart';
 import 'package:world_time/services/worldtime.dart';
 import 'package:world_time/views/location.dart';
+import 'package:world_time/widgets/analog_clock.dart';
+import 'package:world_time/widgets/day_progress_indicator.dart';
+import 'package:world_time/widgets/time_scrubber.dart';
 
 class Home extends StatefulWidget {
   final dynamic data;
@@ -21,7 +25,10 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   late WorldTime _currentLocation;
   Timer? _tickerTimer;
   bool _is24Hour = false;
+  bool _isAnalogClock = false;
   bool _isFavorite = false;
+  bool _showTimeScrubber = false;
+  double _timeTravelHours = 0.0;
   List<WorldTime> _favoriteLocations = [];
 
   @override
@@ -41,17 +48,23 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       final locId = (widget.data['location'] as String?) ?? 'india';
       _currentLocation = Region.findById(locId);
     } else {
-      _currentLocation = Region.findById('india');
+      final savedId = SharedPrefs.isInitialized
+          ? SharedPrefs.selectedLocationId
+          : 'india';
+      _currentLocation = Region.findById(savedId);
     }
     _currentLocation.updateTime();
   }
 
   void _loadPreferences() {
+    if (!SharedPrefs.isInitialized) return;
     _is24Hour = SharedPrefs.is24HourFormat;
+    _isAnalogClock = SharedPrefs.isAnalogClock;
     _syncFavorites();
   }
 
   void _syncFavorites() {
+    if (!SharedPrefs.isInitialized) return;
     _isFavorite = SharedPrefs.isFavorite(_currentLocation.id);
     final favIds = SharedPrefs.favorites;
     _favoriteLocations = favIds.map(Region.findById).toList();
@@ -105,6 +118,15 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     });
   }
 
+  Future<void> _toggleClockStyle() async {
+    final next = !_isAnalogClock;
+    await SharedPrefs.setAnalogClock(next);
+    if (!mounted) return;
+    setState(() {
+      _isAnalogClock = next;
+    });
+  }
+
   Future<void> _navigateToLocationPicker() async {
     final selected = await Navigator.of(context).push<WorldTime>(
       MaterialPageRoute(
@@ -116,9 +138,11 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       setState(() {
         _currentLocation = selected;
         _currentLocation.updateTime();
+        _timeTravelHours = 0.0;
         _syncFavorites();
       });
       await SharedPrefs.setData(selected.id, selected.gmt);
+      await SharedPrefs.addRecent(selected.id);
     }
   }
 
@@ -130,11 +154,38 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       _syncFavorites();
     });
     SharedPrefs.setData(target.id, target.gmt);
+    SharedPrefs.addRecent(target.id);
+  }
+
+  void _copyTimeToClipboard(DateTime time, String timeStr) {
+    HapticFeedback.lightImpact();
+    final text =
+        '${_currentLocation.name} (${_currentLocation.city}): $timeStr (GMT${_currentLocation.gmt})';
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(
+              Icons.check_circle_rounded,
+              color: Colors.lightGreenAccent,
+              size: 20,
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Text('Copied "$text" to clipboard')),
+          ],
+        ),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final now = _currentLocation.currentTime;
+    final simulatedShift = Duration(minutes: (_timeTravelHours * 60).round());
+    final now = _currentLocation.timeAt(shift: simulatedShift);
     final timeStr = _currentLocation.formatTime(
       is24Hour: _is24Hour,
       showSeconds: false,
@@ -143,6 +194,8 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     final secondsStr = now.second.toString().padLeft(2, '0');
     final dateStr = _currentLocation.formatDate(now: now);
     final diffStr = _currentLocation.relativeTimeDifference;
+    final dayProgress = _currentLocation.getDayProgress(now: now);
+    final isDaylight = _currentLocation.isDaylight(now: now);
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -169,9 +222,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  Colors.black.withValues(alpha: 0.4),
-                  Colors.black.withValues(alpha: 0.25),
-                  Colors.black.withValues(alpha: 0.75),
+                  Colors.black.withValues(alpha: 0.45),
+                  Colors.black.withValues(alpha: 0.3),
+                  Colors.black.withValues(alpha: 0.8),
                 ],
               ),
             ),
@@ -196,18 +249,38 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                       children: [
                         _buildTopBar(),
 
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
+
+                        if (_showTimeScrubber) ...[
+                          TimeScrubber(
+                            hourOffset: _timeTravelHours,
+                            onChanged: (val) {
+                              setState(() {
+                                _timeTravelHours = val;
+                              });
+                            },
+                            onReset: () {
+                              setState(() {
+                                _timeTravelHours = 0.0;
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                        ],
 
                         _buildHeroGlassClock(
+                          now: now,
                           timeStr: timeStr,
                           secondsStr: secondsStr,
                           dateStr: dateStr,
                           diffStr: diffStr,
+                          dayProgress: dayProgress,
+                          isDaylight: isDaylight,
                         ),
 
-                        const SizedBox(height: 24),
+                        const SizedBox(height: 16),
 
-                        _buildFavoritesBar(),
+                        _buildFavoritesBar(simulatedShift: simulatedShift),
 
                         const SizedBox(height: 16),
 
@@ -228,39 +301,106 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.35),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.15),
-              width: 1,
+        Flexible(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.15),
+                width: 1,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _currentLocation.periodEmoji,
+                  style: const TextStyle(fontSize: 15),
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    _currentLocation.periodTitle.toUpperCase(),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 11,
+                      letterSpacing: 1.2,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
             ),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                _currentLocation.periodEmoji,
-                style: const TextStyle(fontSize: 16),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                _currentLocation.periodTitle.toUpperCase(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                  letterSpacing: 1.5,
-                ),
-              ),
-            ],
-          ),
         ),
+        const SizedBox(width: 6),
 
         Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
+            // Time Travel Scrubber Toggle
+            IconButton(
+              iconSize: 20,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+              style: IconButton.styleFrom(
+                backgroundColor: _showTimeScrubber
+                    ? Colors.amberAccent.withValues(alpha: 0.25)
+                    : Colors.black.withValues(alpha: 0.35),
+                foregroundColor: _showTimeScrubber
+                    ? Colors.amberAccent
+                    : Colors.white,
+                side: BorderSide(
+                  color: _showTimeScrubber
+                      ? Colors.amberAccent.withValues(alpha: 0.6)
+                      : Colors.white.withValues(alpha: 0.15),
+                  width: 1,
+                ),
+              ),
+              onPressed: () {
+                setState(() {
+                  _showTimeScrubber = !_showTimeScrubber;
+                });
+              },
+              tooltip: _showTimeScrubber
+                  ? 'Hide Time Scrubber'
+                  : 'Time Travel Scrubber',
+              icon: const Icon(Icons.timelapse_rounded),
+            ),
+            const SizedBox(width: 4),
+
+            // Clock Face Mode (Digital / Analog)
+            IconButton(
+              iconSize: 20,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.black.withValues(alpha: 0.35),
+                foregroundColor: Colors.white,
+                side: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.15),
+                  width: 1,
+                ),
+              ),
+              onPressed: _toggleClockStyle,
+              tooltip: _isAnalogClock
+                  ? 'Switch to Digital'
+                  : 'Switch to Analog',
+              icon: Icon(
+                _isAnalogClock
+                    ? Icons.numbers_rounded
+                    : Icons.access_time_rounded,
+              ),
+            ),
+            const SizedBox(width: 4),
+
+            // 12H / 24H Toggle
             Material(
               color: Colors.transparent,
               child: InkWell(
@@ -268,8 +408,8 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                 onTap: _toggleTimeFormat,
                 child: Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
+                    horizontal: 10,
+                    vertical: 7,
                   ),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.35),
@@ -284,17 +424,21 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                      letterSpacing: 1,
+                      fontSize: 11,
+                      letterSpacing: 0.8,
                     ),
                   ),
                 ),
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 4),
 
+            // Favorite Button
             IconButton(
-              iconSize: 26,
+              iconSize: 22,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
               style: IconButton.styleFrom(
                 backgroundColor: Colors.black.withValues(alpha: 0.35),
                 foregroundColor: _isFavorite
@@ -320,10 +464,13 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   }
 
   Widget _buildHeroGlassClock({
+    required DateTime now,
     required String timeStr,
     required String secondsStr,
     required String dateStr,
     required String diffStr,
+    required double dayProgress,
+    required bool isDaylight,
   }) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(32),
@@ -331,9 +478,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
         child: Container(
           width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
           decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.28),
+            color: Colors.black.withValues(alpha: 0.3),
             borderRadius: BorderRadius.circular(32),
             border: Border.all(
               color: Colors.white.withValues(alpha: 0.2),
@@ -358,7 +505,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.8),
+                      color: Colors.white.withValues(alpha: 0.85),
                       width: 2.5,
                     ),
                     boxShadow: [
@@ -383,7 +530,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
 
               Text(
                 _currentLocation.name,
@@ -417,54 +564,120 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                 ),
               ],
 
-              const SizedBox(height: 28),
+              const SizedBox(height: 20),
 
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.baseline,
-                  textBaseline: TextBaseline.alphabetic,
-                  children: [
-                    Text(
-                      timeStr,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 68.0,
-                        letterSpacing: -1.0,
-                        fontFeatures: [FontFeature.tabularFigures()],
-                        shadows: [
-                          Shadow(
-                            color: Colors.black87,
-                            offset: Offset(0, 4),
-                            blurRadius: 14,
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      ':$secondsStr',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.75),
-                        fontWeight: FontWeight.w600,
-                        fontSize: 28.0,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                        shadows: const [
-                          Shadow(
-                            color: Colors.black54,
-                            offset: Offset(0, 2),
-                            blurRadius: 6,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+              if (_isAnalogClock) ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  child: AnalogClockWidget(
+                    time: now,
+                    size: 200,
+                    showSeconds: true,
+                  ),
                 ),
-              ),
+                const SizedBox(height: 8),
+                InkWell(
+                  onTap: () =>
+                      _copyTimeToClipboard(now, '$timeStr:$secondsStr'),
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.15),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          timeStr,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18.0,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                        Text(
+                          ':$secondsStr',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.7),
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14.0,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ] else
+                InkWell(
+                  onTap: () =>
+                      _copyTimeToClipboard(now, '$timeStr:$secondsStr'),
+                  borderRadius: BorderRadius.circular(16),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.baseline,
+                        textBaseline: TextBaseline.alphabetic,
+                        children: [
+                          Text(
+                            timeStr,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 66.0,
+                              letterSpacing: -1.0,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                              shadows: [
+                                Shadow(
+                                  color: Colors.black87,
+                                  offset: Offset(0, 4),
+                                  blurRadius: 14,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            ':$secondsStr',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.75),
+                              fontWeight: FontWeight.w600,
+                              fontSize: 28.0,
+                              fontFeatures: const [
+                                FontFeature.tabularFigures(),
+                              ],
+                              shadows: const [
+                                Shadow(
+                                  color: Colors.black54,
+                                  offset: Offset(0, 2),
+                                  blurRadius: 6,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
 
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
 
               Text(
                 dateStr,
@@ -472,16 +685,17 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.9),
                   fontWeight: FontWeight.w500,
-                  fontSize: 16.0,
+                  fontSize: 15.0,
                   letterSpacing: 0.5,
                 ),
               ),
 
-              const SizedBox(height: 18),
+              const SizedBox(height: 14),
 
+              // GMT and Relative Difference Pill
               Container(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
+                  horizontal: 12,
                   vertical: 6,
                 ),
                 decoration: BoxDecoration(
@@ -501,16 +715,28 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                       color: Colors.white70,
                     ),
                     const SizedBox(width: 6),
-                    Text(
-                      'GMT${_currentLocation.gmt} • $diffStr',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
+                    Flexible(
+                      child: Text(
+                        'GMT${_currentLocation.gmt} • $diffStr',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
                 ),
+              ),
+
+              const SizedBox(height: 14),
+
+              // Day progress indicator
+              DayProgressIndicator(
+                progress: dayProgress,
+                isDaylight: isDaylight,
               ),
             ],
           ),
@@ -519,7 +745,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildFavoritesBar() {
+  Widget _buildFavoritesBar({required Duration simulatedShift}) {
     if (_favoriteLocations.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -553,7 +779,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         ),
         const SizedBox(height: 6),
         SizedBox(
-          height: 68,
+          height: 72,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             physics: const BouncingScrollPhysics(),
@@ -562,10 +788,13 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             itemBuilder: (context, index) {
               final loc = _favoriteLocations[index];
               final isCurrent = loc.id == _currentLocation.id;
-              final locTime = loc.formatTime(
+              final locTime = loc.timeAt(shift: simulatedShift);
+              final locTimeStr = loc.formatTime(
                 is24Hour: _is24Hour,
                 showSeconds: false,
+                now: locTime,
               );
+              final relativeDiff = loc.relativeOffsetTo(_currentLocation);
 
               return Material(
                 color: Colors.transparent,
@@ -595,8 +824,8 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                         ClipOval(
                           child: Image.asset(
                             loc.flagAssetPath,
-                            width: 32,
-                            height: 32,
+                            width: 34,
+                            height: 34,
                             fit: BoxFit.cover,
                             errorBuilder: (context, error, stackTrace) =>
                                 const Icon(
@@ -611,25 +840,53 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                           mainAxisAlignment: MainAxisAlignment.center,
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              loc.name,
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: isCurrent
-                                    ? FontWeight.bold
-                                    : FontWeight.w600,
-                                fontSize: 13,
-                              ),
+                            Row(
+                              children: [
+                                Text(
+                                  loc.name,
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: isCurrent
+                                        ? FontWeight.bold
+                                        : FontWeight.w600,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  loc.periodEmoji,
+                                  style: const TextStyle(fontSize: 11),
+                                ),
+                              ],
                             ),
-                            Text(
-                              locTime,
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.8),
-                                fontSize: 12,
-                                fontFeatures: const [
-                                  FontFeature.tabularFigures(),
-                                ],
-                              ),
+                            const SizedBox(height: 2),
+                            Row(
+                              children: [
+                                Text(
+                                  locTimeStr,
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.9),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    fontFeatures: const [
+                                      FontFeature.tabularFigures(),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  isCurrent ? 'ACTIVE' : relativeDiff,
+                                  style: TextStyle(
+                                    color: isCurrent
+                                        ? Colors.lightBlueAccent
+                                        : Colors.white.withValues(alpha: 0.55),
+                                    fontSize: 10,
+                                    fontWeight: isCurrent
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),

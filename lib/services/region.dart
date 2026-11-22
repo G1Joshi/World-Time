@@ -1,5 +1,17 @@
 import 'package:world_time/services/worldtime.dart';
 
+enum LocationSort {
+  defaultOrder('Default Order'),
+  alphabetical('Name (A-Z)'),
+  alphabeticalDesc('Name (Z-A)'),
+  timezoneAsc('Timezone (West to East)'),
+  timezoneDesc('Timezone (East to West)'),
+  localTime('Current Time');
+
+  final String label;
+  const LocationSort(this.label);
+}
+
 class Region {
   static final List<WorldTime> locations = [
     WorldTime(
@@ -305,7 +317,9 @@ class Region {
     ),
   ];
 
-  static List<String> get categories => [
+  static int get totalLocations => locations.length;
+
+  static List<String> get categories => const [
     'All',
     'Favorites',
     'Americas',
@@ -330,10 +344,11 @@ class Region {
     String query = '',
     String category = 'All',
     List<String> favoriteIds = const [],
+    LocationSort sort = LocationSort.defaultOrder,
   }) {
     final cleanQuery = query.toLowerCase().trim();
 
-    return locations.where((loc) {
+    final filtered = locations.where((loc) {
       if (category == 'Favorites') {
         if (!favoriteIds.contains(loc.id)) return false;
       } else if (category != 'All' && loc.continent != category) {
@@ -342,11 +357,47 @@ class Region {
 
       if (cleanQuery.isEmpty) return true;
 
+      final normalizedQueryWithoutGmt = cleanQuery
+          .replaceAll('gmt', '')
+          .replaceAll('utc', '')
+          .trim();
+
       return loc.name.toLowerCase().contains(cleanQuery) ||
           loc.city.toLowerCase().contains(cleanQuery) ||
           loc.id.toLowerCase().contains(cleanQuery) ||
           loc.continent.toLowerCase().contains(cleanQuery) ||
-          loc.gmt.toLowerCase().contains(cleanQuery);
+          loc.gmt.toLowerCase().contains(cleanQuery) ||
+          (normalizedQueryWithoutGmt.isNotEmpty &&
+              loc.gmt.contains(normalizedQueryWithoutGmt));
     }).toList();
+
+    switch (sort) {
+      case LocationSort.defaultOrder:
+        break;
+      case LocationSort.alphabetical:
+        filtered.sort((a, b) => a.name.compareTo(b.name));
+      case LocationSort.alphabeticalDesc:
+        filtered.sort((a, b) => b.name.compareTo(a.name));
+      case LocationSort.timezoneAsc:
+        filtered.sort(
+          (a, b) =>
+              a.offsetDuration.inMinutes.compareTo(b.offsetDuration.inMinutes),
+        );
+      case LocationSort.timezoneDesc:
+        filtered.sort(
+          (a, b) =>
+              b.offsetDuration.inMinutes.compareTo(a.offsetDuration.inMinutes),
+        );
+      case LocationSort.localTime:
+        filtered.sort((a, b) {
+          final nowA = a.currentTime;
+          final nowB = b.currentTime;
+          final minA = nowA.hour * 60 + nowA.minute;
+          final minB = nowB.hour * 60 + nowB.minute;
+          return minA.compareTo(minB);
+        });
+    }
+
+    return filtered;
   }
 }

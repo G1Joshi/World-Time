@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:world_time/models/sharedprefs.dart';
 import 'package:world_time/services/region.dart';
 import 'package:world_time/services/worldtime.dart';
@@ -15,13 +15,20 @@ class Location extends StatefulWidget {
 class _LocationState extends State<Location> {
   final TextEditingController _searchController = TextEditingController();
   String _selectedCategory = 'All';
+  LocationSort _selectedSort = LocationSort.defaultOrder;
   List<WorldTime> _filteredLocations = [];
   List<String> _favoriteIds = [];
+  List<String> _recentIds = [];
+  WorldTime? _activeLocation;
 
   @override
   void initState() {
     super.initState();
-    _favoriteIds = SharedPrefs.favorites;
+    _activeLocation = widget.currentLocationId != null
+        ? Region.findById(widget.currentLocationId!)
+        : null;
+    _favoriteIds = SharedPrefs.isInitialized ? SharedPrefs.favorites : [];
+    _recentIds = SharedPrefs.isInitialized ? SharedPrefs.recents : [];
     _applyFilter();
   }
 
@@ -37,6 +44,7 @@ class _LocationState extends State<Location> {
         query: _searchController.text,
         category: _selectedCategory,
         favoriteIds: _favoriteIds,
+        sort: _selectedSort,
       );
     });
   }
@@ -67,8 +75,77 @@ class _LocationState extends State<Location> {
     Navigator.of(context).pop(loc);
   }
 
+  void _showSortDialog() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1E293B),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: Text(
+                    'Sort Locations',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const Divider(color: Colors.white12),
+                ...LocationSort.values.map((sort) {
+                  final isSelected = sort == _selectedSort;
+                  return ListTile(
+                    leading: Icon(
+                      isSelected
+                          ? Icons.check_circle_rounded
+                          : Icons.circle_outlined,
+                      color: isSelected
+                          ? Colors.lightBlueAccent
+                          : Colors.white38,
+                    ),
+                    title: Text(
+                      sort.label,
+                      style: TextStyle(
+                        color: isSelected ? Colors.white : Colors.white70,
+                        fontWeight: isSelected
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      setState(() {
+                        _selectedSort = sort;
+                        _applyFilter();
+                      });
+                    },
+                  );
+                }),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final showRecents =
+        _searchController.text.isEmpty &&
+        _selectedCategory == 'All' &&
+        _recentIds.isNotEmpty;
+
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
@@ -84,6 +161,13 @@ class _LocationState extends State<Location> {
           ),
         ),
         iconTheme: const IconThemeData(color: Colors.white),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.sort_rounded),
+            tooltip: 'Sort Options',
+            onPressed: _showSortDialog,
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -197,8 +281,70 @@ class _LocationState extends State<Location> {
             ),
           ),
 
+          if (showRecents) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.history_rounded,
+                    size: 14,
+                    color: Colors.white54,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'RECENTLY VIEWED',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.5),
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 40,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: _recentIds.length,
+                separatorBuilder: (context, index) => const SizedBox(width: 8),
+                itemBuilder: (context, index) {
+                  final recentLoc = Region.findById(_recentIds[index]);
+                  return ActionChip(
+                    avatar: ClipOval(
+                      child: Image.asset(
+                        recentLoc.flagAssetPath,
+                        width: 18,
+                        height: 18,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    label: Text(
+                      recentLoc.name,
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                    backgroundColor: const Color(0xFF1E293B),
+                    side: BorderSide(
+                      color: Colors.white.withValues(alpha: 0.15),
+                      width: 1,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    onPressed: () => _selectLocation(recentLoc),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 6),
+          ],
+
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 6),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -211,13 +357,16 @@ class _LocationState extends State<Location> {
                     letterSpacing: 1.2,
                   ),
                 ),
-                Text(
-                  _selectedCategory.toUpperCase(),
-                  style: const TextStyle(
-                    color: Colors.lightBlueAccent,
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.2,
+                Flexible(
+                  child: Text(
+                    _selectedSort.label.toUpperCase(),
+                    style: const TextStyle(
+                      color: Colors.lightBlueAccent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
@@ -238,9 +387,15 @@ class _LocationState extends State<Location> {
                           loc.id == widget.currentLocationId;
                       final isFav = _favoriteIds.contains(loc.id);
                       final currentTimeStr = loc.formatTime(
-                        is24Hour: SharedPrefs.is24HourFormat,
+                        is24Hour: SharedPrefs.isInitialized
+                            ? SharedPrefs.is24HourFormat
+                            : false,
                         showSeconds: false,
                       );
+                      final relativeToActive =
+                          _activeLocation != null && !isCurrent
+                          ? loc.relativeOffsetTo(_activeLocation!)
+                          : null;
 
                       return Card(
                         color: isCurrent
@@ -343,13 +498,17 @@ class _LocationState extends State<Location> {
                                       ),
                                       const SizedBox(height: 3),
                                       Text(
-                                        '${loc.city} • GMT${loc.gmt}',
+                                        relativeToActive != null
+                                            ? '${loc.city} • GMT${loc.gmt} ($relativeToActive)'
+                                            : '${loc.city} • GMT${loc.gmt}',
                                         style: TextStyle(
                                           color: Colors.white.withValues(
                                             alpha: 0.65,
                                           ),
                                           fontSize: 13,
                                         ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
                                     ],
                                   ),
@@ -446,6 +605,7 @@ class _LocationState extends State<Location> {
                 _searchController.clear();
                 setState(() {
                   _selectedCategory = 'All';
+                  _selectedSort = LocationSort.defaultOrder;
                   _applyFilter();
                 });
               },
